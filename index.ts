@@ -1,3 +1,5 @@
+import { ObjectId } from "mongodb";
+
 const express = require("express");
 const cors = require("cors");
 const dotenv = require("dotenv");
@@ -57,7 +59,99 @@ async function runDb() {
             }
         });
 
+        app.get("/api/users/:id", async (req: any, res: any) => {
+            try {
+                if (!userCollection) {
+                    return res.status(500).json({ success: false, message: "Database connection not established yet." });
+                }
+
+                const userId = req.params.id;
+
+                // 1. Validate if the incoming ID string is a valid MongoDB ObjectId format
+                if (!ObjectId.isValid(userId)) {
+                    return res.status(400).json({
+                        success: false,
+                        message: "Invalid User ID format."
+                    });
+                }
+
+                // 2. Query the user collection using the converted ObjectId
+                const user = await userCollection.findOne({ _id: new ObjectId(userId) });
+
+                // 3. If no user is found, return a 404
+                if (!user) {
+                    return res.status(404).json({
+                        success: false,
+                        message: "User not found."
+                    });
+                }
+
+                // 4. Return the found user details
+                res.status(200).json({
+                    success: true,
+                    message: "User profile retrieved successfully!",
+                    data: user
+                });
+
+            } catch (error) {
+                console.error("❌ Error fetching individual user:", error);
+                res.status(500).json({
+                    success: false,
+                    message: "Internal server error occurred while retrieving user details."
+                });
+            }
+        });
+
         // ITEMS APIs
+        app.get("/api/allitems", async (req: any, res: any) => {
+            try {
+                if (!allitemsCollection) {
+                    return res.status(500).json({ success: false, message: "Database connection not established yet." });
+                }
+
+                const allItems = await allitemsCollection.find({}).sort({ created_at: -1 }).toArray();
+
+                res.status(200).json({
+                    success: true,
+                    message: "All marketplace items fetched successfully!",
+                    count: allItems.length,
+                    data: allItems
+                });
+            } catch (error) {
+                console.error("❌ Error fetching all items:", error);
+                res.status(500).json({
+                    success: false,
+                    message: "Failed to fetch marketplace items from the database."
+                });
+            }
+        });
+
+
+        app.get("/api/allitems/user/:userId", async (req: any, res: any) => {
+            try {
+                if (!allitemsCollection) {
+                    return res.status(500).json({ success: false, message: "Database connection not established yet." });
+                }
+
+                const targetUserId = req.params.userId;
+
+                const userItems = await allitemsCollection.find({ userId: targetUserId }).toArray();
+
+                res.status(200).json({
+                    success: true,
+                    message: "User's listings retrieved successfully!",
+                    count: userItems.length,
+                    data: userItems
+                });
+            } catch (error) {
+                console.error("❌ Error fetching user items:", error);
+                res.status(500).json({
+                    success: false,
+                    message: "Failed to fetch user items from the database."
+                });
+            }
+        });
+
         app.post("/api/allitems", async (req: any, res: any) => {
             try {
                 if (!allitemsCollection) {
