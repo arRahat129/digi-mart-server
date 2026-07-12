@@ -1,0 +1,35 @@
+{
+  "compilerOptions": {
+    /* File Layout */
+    "rootDir": "./", // Look for files right here in the root
+    "outDir": "./dist", // Keep output JS inside /dist
+    /* Environment Settings */
+    "module": "CommonJS",
+    "target": "esnext",
+    "lib": [
+      "esnext"
+    ],
+    "types": [
+      "node"
+    ],
+    /* Other Outputs */
+    "sourceMap": true,
+    "declaration": true,
+    "declarationMap": true,
+    /* Stricter Typechecking Options */
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "exactOptionalPropertyTypes": true,
+    /* Recommended Options */
+    "isolatedModules": true,
+    "moduleDetection": "force",
+    "skipLibCheck": true
+  },
+  "include": [
+    "**/*.ts"
+  ], // Check all TypeScript files in the root
+  "exclude": [
+    "node_modules",
+    "dist"
+  ] // Do not check dependencies or builds
+}
