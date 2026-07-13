@@ -34,6 +34,8 @@ async function runDb() {
         const database = client.db("digi-mart");
         const userCollection = database.collection('user');
         const allitemsCollection = database.collection("all_items");
+        const messageCollection = database.collection("messages");
+        const chatCollection = database.collection("chats");
 
 
         // USER APIs
@@ -303,6 +305,185 @@ async function runDb() {
                     success: false,
                     message: "Failed to add item to database."
                 });
+            }
+        });
+
+        // CHAT & MESSAGE APIs (FIXED SYSTEM LOOKUPS)
+        app.get("/api/chats/user/:userId", async (req: any, res: any) => {
+            try {
+                const targetUserId = req.params.userId;
+                console.log('targetuserid', targetUserId);
+
+                const userChats = await chatCollection.aggregate([
+                    {
+                        $match: {
+                            $or: [{ buyerId: targetUserId }, { sellerId: targetUserId }]
+                        }
+                    },
+                    {
+                        $sort: { lastMessageAt: -1 }
+                    },
+                    // Convert target string IDs over to ObjectIds on the fly so lookups sync up cleanly
+                    {
+                        $addFields: {
+                            buyerObjId: { $cond: [{ $ifNull: ["$buyerId", false] }, { $toObjectId: "$buyerId" }, null] },
+                            sellerObjId: { $cond: [{ $ifNull: ["$sellerId", false] }, { $toObjectId: "$sellerId" }, null] },
+                            itemObjId: { $cond: [{ $ifNull: ["$itemId", false] }, { $toObjectId: "$itemId" }, null] }
+                        }
+                    },
+                    {
+                        $lookup: {
+                            from: "user", // FIXED: Was "users"
+                            localField: "buyerObjId",
+                            foreignField: "_id",
+                            as: "buyerProfile"
+                        }
+                    },
+                    {
+                        $lookup: {
+                            from: "user", // FIXED: Was "users"
+                            localField: "sellerObjId",
+                            foreignField: "_id",
+                            as: "sellerProfile"
+                        }
+                    },
+                    {
+                        $lookup: {
+                            from: "all_items", // FIXED: Was "items"
+                            localField: "itemObjId",
+                            foreignField: "_id",
+                            as: "itemDetails"
+                        }
+                    },
+                    {
+                        $project: {
+                            _id: 1,
+                            buyerId: 1,
+                            sellerId: 1,
+                            itemId: 1,
+                            lastMessage: 1,
+                            lastMessageAt: 1,
+                            buyer: { $arrayElemAt: ["$buyerProfile", 0] },
+                            seller: { $arrayElemAt: ["$sellerProfile", 0] },
+                            item: { $arrayElemAt: ["$itemDetails", 0] }
+                        }
+                    }
+                ]).toArray();
+                console.log('user chat', userChats);
+
+                res.status(200).json({ success: true, data: userChats });
+            } catch (error) {
+                console.error("❌ Error fetching chats:", error);
+                res.status(500).json({ success: false, message: "Server error retrieving chat relationships." });
+            }
+        });
+
+        app.post("/api/messages", async (req: any, res: any) => {
+            try {
+                const {
+                    buyerId, sellerId, itemId, senderId, message,
+                    buyerName, buyerImage, buyerEmail,
+                    sellerName, sellerImage, location, contact
+                } = req.body;
+
+                if (!buyerId || !sellerId || !itemId || !senderId || !message) {
+                    return res.status(400).json({ success: false, message: "Missing required tracking fields." });
+                }
+
+                // 1. Ensure Buyer Profile exists or stays updated in the 'user' collection
+                if (ObjectId.isValid(buyerId)) {
+                    await userCollection.updateOne(
+                        { _id: new ObjectId(buyerId) },
+                        {
+                            $set: {
+                                name: buyerName,
+                                image: buyerImage,
+                                email: buyerEmail,
+                                updatedAt: new Date()
+                            }
+                        },
+                        { upsert: true }
+                    );
+                }
+
+                // 2. Ensure Seller Profile exists or stays updated in the 'user' collection
+                if (ObjectId.isValid(sellerId)) {
+                    await userCollection.updateOne(
+                        { _id: new ObjectId(sellerId) },
+                        {
+                            $set: {
+                                name: sellerName,
+                                image: sellerImage,
+                                location: location,
+                                contact: contact,
+                                updatedAt: new Date()
+                            }
+                        },
+                        { upsert: true }
+                    );
+                }
+
+                const now = new Date();
+                let targetChatId: ObjectId;
+
+                let chat = await chatCollection.findOne({ buyerId, sellerId, itemId });
+
+                if (!chat) {
+                    const newChatResult = await chatCollection.insertOne({
+                        buyerId,
+                        sellerId,
+                        itemId,
+                        lastMessage: message,
+                        lastMessageAt: now
+                    });
+                    targetChatId = newChatResult.insertedId;
+                } else {
+                    targetChatId = chat._id instanceof ObjectId ? chat._id : new ObjectId(chat._id);
+                    await chatCollection.updateOne(
+                        { _id: targetChatId },
+                        { $set: { lastMessage: message, lastMessageAt: now } }
+                    );
+                }
+
+                const newMessage = {
+                    chatId: targetChatId,
+                    senderId,
+                    message,
+                    timestamp: now
+                };
+
+                const result = await messageCollection.insertOne(newMessage);
+
+                res.status(201).json({
+                    success: true,
+                    message: "Message sent and profiles synchronized successfully!",
+                    data: {
+                        chatId: targetChatId.toHexString(),
+                        messageId: result.insertedId
+                    }
+                });
+            } catch (error) {
+                console.error("❌ Error sending message:", error);
+                res.status(500).json({ success: false, message: "Server error handling message dispatch." });
+            }
+        });
+
+        app.get("/api/messages/chat/:chatId", async (req: any, res: any) => {
+            try {
+                const { chatId } = req.params;
+                if (!ObjectId.isValid(chatId)) {
+                    return res.status(400).json({ success: false, message: "Invalid Chat ID format." });
+                }
+
+                const continuousMessages = await messageCollection
+                    .find({ chatId: new ObjectId(chatId) })
+                    .sort({ timestamp: 1 })
+                    .toArray();
+
+                res.status(200).json({ success: true, data: continuousMessages });
+            } catch (error) {
+                console.error("❌ Error fetching continuous thread:", error);
+                res.status(500).json({ success: false, message: "Server error." });
             }
         });
 
