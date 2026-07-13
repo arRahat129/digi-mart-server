@@ -61,13 +61,13 @@ async function runDb() {
 
         app.get("/api/users/:id", async (req: any, res: any) => {
             try {
-                if (!userCollection) {
+                if (!userCollection || !allitemsCollection) {
                     return res.status(500).json({ success: false, message: "Database connection not established yet." });
                 }
 
                 const userId = req.params.id;
+                const { category } = req.query;
 
-                // 1. Validate if the incoming ID string is a valid MongoDB ObjectId format
                 if (!ObjectId.isValid(userId)) {
                     return res.status(400).json({
                         success: false,
@@ -75,10 +75,8 @@ async function runDb() {
                     });
                 }
 
-                // 2. Query the user collection using the converted ObjectId
                 const user = await userCollection.findOne({ _id: new ObjectId(userId) });
 
-                // 3. If no user is found, return a 404
                 if (!user) {
                     return res.status(404).json({
                         success: false,
@@ -86,11 +84,29 @@ async function runDb() {
                     });
                 }
 
-                // 4. Return the found user details
+                let similarProducts: any[] = [];
+                if (category) {
+                    similarProducts = await allitemsCollection
+                        .find({
+                            category: category,
+                            availability: "available"
+                        })
+                        .project({
+                            _id: 1,
+                            title: 1,
+                            description: 1,
+                            price: 1,
+                            imageUrl: 1
+                        })
+                        .limit(3)
+                        .toArray();
+                }
+
                 res.status(200).json({
                     success: true,
                     message: "User profile retrieved successfully!",
-                    data: user
+                    data: user,
+                    similarProducts: similarProducts
                 });
 
             } catch (error) {
@@ -106,22 +122,131 @@ async function runDb() {
         app.get("/api/allitems", async (req: any, res: any) => {
             try {
                 if (!allitemsCollection) {
-                    return res.status(500).json({ success: false, message: "Database connection not established yet." });
+                    return res.status(500).json({
+                        success: false,
+                        message: "Database connection not established yet."
+                    });
                 }
 
-                const allItems = await allitemsCollection.find({}).sort({ created_at: -1 }).toArray();
+                const {
+                    search,
+                    category,
+                    minPrice,
+                    maxPrice,
+                    sortBy,
+                    sortOrder,
+                    page = 1,
+                    limit = 10
+                } = req.query;
+
+                const query: any = {};
+
+                if (search) {
+                    query.$or = [
+                        { title: { $regex: search, $options: "i" } },
+                        { description: { $regex: search, $options: "i" } }
+                    ];
+                }
+
+                if (category && category !== "all") {
+                    query.category = category;
+                }
+
+                if (minPrice || maxPrice) {
+                    query.price = {};
+                    if (minPrice) query.price.$gte = String(minPrice);
+                    if (maxPrice) query.price.$lte = String(maxPrice);
+                }
+
+                let sortOption: any = { created_at: -1 };
+
+                if (sortBy) {
+                    const order = sortOrder === "asc" ? 1 : -1;
+
+                    if (sortBy === "price") {
+                        sortOption = { price: order };
+                    } else if (sortBy === "date") {
+                        sortOption = { created_at: order };
+                    } else if (sortBy === "condition") {
+                        sortOption = { conditionYears: order };
+                    }
+                }
+
+                const pageNumber = Math.max(1, parseInt(page as string) || 1);
+                const limitNumber = Math.max(1, parseInt(limit as string) || 10);
+                const skip = (pageNumber - 1) * limitNumber;
+
+                const [allItems, totalItems] = await Promise.all([
+                    allitemsCollection
+                        .find(query)
+                        .sort(sortOption)
+                        .skip(skip)
+                        .limit(limitNumber)
+                        .toArray(),
+                    allitemsCollection.countDocuments(query)
+                ]);
+
+                const totalPages = Math.ceil(totalItems / limitNumber);
 
                 res.status(200).json({
                     success: true,
-                    message: "All marketplace items fetched successfully!",
-                    count: allItems.length,
+                    message: "Marketplace items fetched successfully!",
+                    meta: {
+                        totalItems,
+                        totalPages,
+                        currentPage: pageNumber,
+                        limit: limitNumber
+                    },
                     data: allItems
                 });
+
             } catch (error) {
                 console.error("❌ Error fetching all items:", error);
                 res.status(500).json({
                     success: false,
                     message: "Failed to fetch marketplace items from the database."
+                });
+            }
+        });
+
+        app.get("/api/allitems/:id", async (req: any, res: any) => {
+            try {
+                if (!allitemsCollection) {
+                    return res.status(500).json({
+                        success: false,
+                        message: "Database connection not established yet."
+                    });
+                }
+
+                const itemId = req.params.id;
+
+                if (!ObjectId.isValid(itemId)) {
+                    return res.status(400).json({
+                        success: false,
+                        message: "Invalid Item ID format."
+                    });
+                }
+
+                const item = await allitemsCollection.findOne({ _id: new ObjectId(itemId) });
+
+                if (!item) {
+                    return res.status(404).json({
+                        success: false,
+                        message: "Marketplace item not found."
+                    });
+                }
+
+                res.status(200).json({
+                    success: true,
+                    message: "Item details retrieved successfully!",
+                    data: item
+                });
+
+            } catch (error) {
+                console.error("❌ Error fetching individual item:", error);
+                res.status(500).json({
+                    success: false,
+                    message: "Internal server error occurred while retrieving item details."
                 });
             }
         });
