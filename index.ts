@@ -308,6 +308,55 @@ async function runDb() {
             }
         });
 
+        // DELETE ITEM
+        app.delete("/api/allitems/:id", async (req: any, res: any) => {
+            try {
+                const itemId = req.params.id;
+
+                if (!ObjectId.isValid(itemId)) {
+                    return res.status(400).json({ success: false, message: "Invalid Item ID." });
+                }
+
+                const result = await allitemsCollection.deleteOne({ _id: new ObjectId(itemId) });
+
+                if (result.deletedCount === 0) {
+                    return res.status(404).json({ success: false, message: "Item not found." });
+                }
+
+                res.status(200).json({ success: true, message: "Item deleted successfully." });
+            } catch (error) {
+                console.error("❌ Error deleting item:", error);
+                res.status(500).json({ success: false, message: "Failed to delete item." });
+            }
+        });
+
+        // EDIT ITEM
+        app.patch("/api/allitems/:id", async (req: any, res: any) => {
+            try {
+                const itemId = req.params.id;
+                const updateData = req.body;
+
+                if (!ObjectId.isValid(itemId)) {
+                    return res.status(400).json({ success: false, message: "Invalid Item ID." });
+                }
+
+                // $set ensures only the fields provided in updateData are modified
+                const result = await allitemsCollection.updateOne(
+                    { _id: new ObjectId(req.params.id) },
+                    { $set: updateData }
+                );
+
+                if (result.matchedCount === 0) {
+                    return res.status(404).json({ success: false, message: "Item not found." });
+                }
+
+                res.status(200).json({ success: true, message: "Item patched successfully." });
+            } catch (error) {
+                console.error("❌ Error patching item:", error);
+                res.status(500).json({ success: false, message: "Failed to patch item." });
+            }
+        });
+
         // CHAT & MESSAGE APIs (FIXED SYSTEM LOOKUPS)
         app.get("/api/chats/user/:userId", async (req: any, res: any) => {
             try {
@@ -449,6 +498,7 @@ async function runDb() {
                     chatId: targetChatId,
                     senderId,
                     message,
+                    status: "pending",
                     timestamp: now
                 };
 
@@ -484,6 +534,72 @@ async function runDb() {
             } catch (error) {
                 console.error("❌ Error fetching continuous thread:", error);
                 res.status(500).json({ success: false, message: "Server error." });
+            }
+        });
+
+        app.patch("/api/messages/:messageId", async (req: any, res: any) => {
+            try {
+                const { messageId } = req.params;
+                const { status } = req.body; // Expecting "accepted" or "rejected"
+
+                if (!ObjectId.isValid(messageId)) {
+                    return res.status(400).json({ success: false, message: "Invalid Message ID." });
+                }
+
+                if (!["accepted", "rejected"].includes(status)) {
+                    return res.status(400).json({ success: false, message: "Invalid status value." });
+                }
+
+                const result = await messageCollection.updateOne(
+                    { _id: new ObjectId(messageId) },
+                    { $set: { status: status } }
+                );
+
+                if (result.matchedCount === 0) {
+                    return res.status(404).json({ success: false, message: "Message not found." });
+                }
+
+                res.status(200).json({ success: true, message: `Message status updated to ${status}.` });
+            } catch (error) {
+                console.error("❌ Error updating message status:", error);
+                res.status(500).json({ success: false, message: "Internal server error." });
+            }
+        });
+
+        app.patch("/api/messages/process/:messageId", async (req: any, res: any) => {
+            try {
+                const { messageId } = req.params;
+                const { action, itemId } = req.body; // action: "accept" or "reject"
+
+                if (!ObjectId.isValid(messageId) || !ObjectId.isValid(itemId)) {
+                    return res.status(400).json({ success: false, message: "Invalid ID format." });
+                }
+
+                if (action === "accept") {
+                    // 1. Update message status
+                    await messageCollection.updateOne(
+                        { _id: new ObjectId(messageId) },
+                        { $set: { status: "accepted" } }
+                    );
+
+                    // 2. Mark item as unavailable
+                    await allitemsCollection.updateOne(
+                        { _id: new ObjectId(itemId) },
+                        { $set: { availability: "unavailable" } }
+                    );
+
+                    return res.status(200).json({ success: true, message: "Request accepted and item marked unavailable." });
+                }
+
+                if (action === "reject") {
+                    // Option: Simply delete the message or set status to "rejected"
+                    await messageCollection.deleteOne({ _id: new ObjectId(messageId) });
+                    return res.status(200).json({ success: true, message: "Request rejected." });
+                }
+
+            } catch (error) {
+                console.error("❌ Error processing request:", error);
+                res.status(500).json({ success: false, message: "Internal server error." });
             }
         });
 
