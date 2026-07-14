@@ -36,6 +36,66 @@ async function runDb() {
         const allitemsCollection = database.collection("all_items");
         const messageCollection = database.collection("messages");
         const chatCollection = database.collection("chats");
+        const analyticsCollection = database.collection("analytics");
+
+
+        const updateAnalytics = async (userId: string, updateFields: any) => {
+            await analyticsCollection.updateOne(
+                { userId: userId },
+                {
+                    $inc: updateFields,
+                    $set: { lastUpdated: new Date() }
+                },
+                { upsert: true }
+            );
+        };
+
+
+        // Analytics
+        app.get("/api/analytics/:userId", async (req: any, res: any) => {
+            try {
+                const userId = req.params.userId;
+
+                // Run one query to get everything dynamically
+                const data = await messageCollection.aggregate([
+                    {
+                        $facet: {
+                            "inventory": [
+                                { $match: { userId: userId, availability: "available" } },
+                                { $count: "count" }
+                            ],
+                            "requests": [
+                                { $match: { sellerId: userId } },
+                                { $group: { _id: "$status", count: { $sum: 1 } } }
+                            ],
+                            "trend": [
+                                { $match: { $or: [{ senderId: userId }, { receiverId: userId }], timestamp: { $gte: new Date(new Date().setDate(new Date().getDate() - 7)) } } },
+                                { $group: { _id: { $dateToString: { format: "%Y-%m-%d", date: "$timestamp" } }, count: { $sum: 1 } } },
+                                { $sort: { "_id": 1 } }
+                            ]
+                        }
+                    }
+                ]).toArray();
+
+                const result = data[0];
+                const getStatusCount = (status: string) => result.requests.find((r: any) => r._id === status)?.count || 0;
+
+                res.status(200).json({
+                    success: true,
+                    data: {
+                        summary: {
+                            totalInventory: result.inventory[0]?.count || 0,
+                            totalRequests: getStatusCount("pending") + getStatusCount("accepted"),
+                            acceptedDeals: getStatusCount("accepted"),
+                            pendingDeals: getStatusCount("pending")
+                        },
+                        activityTrend: result.trend
+                    }
+                });
+            } catch (error) {
+                res.status(500).json({ success: false, message: "Error generating analytics." });
+            }
+        });
 
 
         // USER APIs
@@ -58,6 +118,35 @@ async function runDb() {
                     success: false,
                     message: "Failed to fetch users from database."
                 });
+            }
+        });
+
+        // ADMIN ALL ACTIONS AND FETCHES
+        app.get("/api/users/all", async (req: any, res: any) => {
+            try {
+                const { page = 1, limit = 10 } = req.query;
+                const pageNumber = Math.max(1, parseInt(page));
+                const limitNumber = Math.max(1, parseInt(limit));
+                const skip = (pageNumber - 1) * limitNumber;
+
+                const [users, totalUsers] = await Promise.all([
+                    userCollection.find({}).skip(skip).limit(limitNumber).toArray(),
+                    userCollection.countDocuments({})
+                ]);
+
+                console.log({ users, totalUsers })
+
+                res.status(200).json({
+                    success: true,
+                    data: users,
+                    meta: {
+                        totalUsers,
+                        totalPages: Math.ceil(totalUsers / limitNumber),
+                        currentPage: pageNumber
+                    }
+                });
+            } catch (error) {
+                res.status(500).json({ success: false, message: "Error fetching users." });
             }
         });
 
@@ -294,6 +383,8 @@ async function runDb() {
 
                 const result = await allitemsCollection.insertOne(newItem);
 
+                await updateAnalytics(req.body.userId, { itemsAdded: 1, inventoryCount: 1 });
+
                 res.status(201).json({
                     success: true,
                     message: "Item added successfully to the collection!",
@@ -313,14 +404,19 @@ async function runDb() {
             try {
                 const itemId = req.params.id;
 
-                if (!ObjectId.isValid(itemId)) {
-                    return res.status(400).json({ success: false, message: "Invalid Item ID." });
+                // 1. Find the item first to get the owner's userId
+                const itemToDelete = await allitemsCollection.findOne({ _id: new ObjectId(itemId) });
+                if (!itemToDelete) {
+                    return res.status(404).json({ success: false, message: "Item not found." });
                 }
 
+                // 2. Delete the item
                 const result = await allitemsCollection.deleteOne({ _id: new ObjectId(itemId) });
 
-                if (result.deletedCount === 0) {
-                    return res.status(404).json({ success: false, message: "Item not found." });
+                if (result.deletedCount > 0) {
+                    // 3. Decrement the inventory count in analytics
+                    // We use -1 to subtract
+                    await updateAnalytics(itemToDelete.userId, { inventoryCount: -1 });
                 }
 
                 res.status(200).json({ success: true, message: "Item deleted successfully." });
@@ -336,14 +432,15 @@ async function runDb() {
                 const itemId = req.params.id;
                 const updateData = req.body;
 
+                const { _id, ...fieldsToUpdate } = updateData;
+
                 if (!ObjectId.isValid(itemId)) {
                     return res.status(400).json({ success: false, message: "Invalid Item ID." });
                 }
 
-                // $set ensures only the fields provided in updateData are modified
                 const result = await allitemsCollection.updateOne(
-                    { _id: new ObjectId(req.params.id) },
-                    { $set: updateData }
+                    { _id: new ObjectId(itemId) },
+                    { $set: fieldsToUpdate }
                 );
 
                 if (result.matchedCount === 0) {
@@ -503,6 +600,8 @@ async function runDb() {
                 };
 
                 const result = await messageCollection.insertOne(newMessage);
+                await updateAnalytics(buyerId, { totalRequestsSent: 1 });
+                await updateAnalytics(sellerId, { totalRequestsReceived: 1 });
 
                 res.status(201).json({
                     success: true,
@@ -569,7 +668,7 @@ async function runDb() {
         app.patch("/api/messages/process/:messageId", async (req: any, res: any) => {
             try {
                 const { messageId } = req.params;
-                const { action, itemId } = req.body; // action: "accept" or "reject"
+                const { action, itemId, sellerId } = req.body; // action: "accept" or "reject"
 
                 if (!ObjectId.isValid(messageId) || !ObjectId.isValid(itemId)) {
                     return res.status(400).json({ success: false, message: "Invalid ID format." });
@@ -588,6 +687,8 @@ async function runDb() {
                         { $set: { availability: "unavailable" } }
                     );
 
+                    await updateAnalytics(sellerId, { acceptedRequests: 1 });
+
                     return res.status(200).json({ success: true, message: "Request accepted and item marked unavailable." });
                 }
 
@@ -600,6 +701,48 @@ async function runDb() {
             } catch (error) {
                 console.error("❌ Error processing request:", error);
                 res.status(500).json({ success: false, message: "Internal server error." });
+            }
+        });
+
+
+        // ADMIN ALL ACTIONS AND FETCHES
+
+        // 2. Update User Role
+        app.patch("/api/users/role/:id", async (req: any, res: any) => {
+            try {
+                const userId = req.params.id;
+                const { role } = req.body; // Expecting { "role": "admin" }
+
+                if (!ObjectId.isValid(userId)) {
+                    return res.status(400).json({ success: false, message: "Invalid ID." });
+                }
+
+                const result = await userCollection.updateOne(
+                    { _id: new ObjectId(userId) },
+                    { $set: { role: role } }
+                );
+
+                if (result.matchedCount === 0) return res.status(404).json({ success: false, message: "User not found." });
+                res.status(200).json({ success: true, message: "User role updated successfully." });
+            } catch (error) {
+                res.status(500).json({ success: false, message: "Error updating role." });
+            }
+        });
+
+        // 3. Delete User
+        app.delete("/api/users/:id", async (req: any, res: any) => {
+            try {
+                const userId = req.params.id;
+                if (!ObjectId.isValid(userId)) {
+                    return res.status(400).json({ success: false, message: "Invalid ID." });
+                }
+
+                const result = await userCollection.deleteOne({ _id: new ObjectId(userId) });
+
+                if (result.deletedCount === 0) return res.status(404).json({ success: false, message: "User not found." });
+                res.status(200).json({ success: true, message: "User deleted successfully." });
+            } catch (error) {
+                res.status(500).json({ success: false, message: "Error deleting user." });
             }
         });
 
