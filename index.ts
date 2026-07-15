@@ -33,7 +33,8 @@ const client = new MongoClient(uri, {
     }
 });
 
-const JWKS = createRemoteJWKSet(new URL(`${process.env.CLIENT_URL}/api/auth/jwks`));
+const clientUrl = process.env.CLIENT_URL || 'https://digi-mart-kappa.vercel.app';
+const JWKS = createRemoteJWKSet(new URL(`${clientUrl}/api/auth/jwks`));
 
 const verifyToken = async (req: any, res: any, next: any) => {
     // console.log('headers', req.headers);
