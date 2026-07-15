@@ -1,3 +1,4 @@
+import { createRemoteJWKSet, jwtVerify } from "jose-cjs";
 import { ObjectId } from "mongodb";
 
 const express = require("express");
@@ -24,6 +25,45 @@ const client = new MongoClient(uri, {
         deprecationErrors: true,
     }
 });
+
+const JWKS = createRemoteJWKSet(new URL(`${process.env.CLIENT_URL}/api/auth/jwks`));
+
+const verifyToken = async (req: any, res: any, next: any) => {
+    // console.log('headers', req.headers);
+    const authHeader = req.headers?.authorization;
+
+    if (!authHeader || !authHeader.startsWith("Bearer")) {
+        return res.status(401).send({ message: 'UNAUTHORIZED ACCESS' });
+    }
+
+    const token = authHeader.split(' ')[1];
+    // console.log(token);
+
+    if (!token) {
+        return res.status(401).send({ message: 'UNAUTHORIZED ACCESS' });
+    }
+
+    try {
+        const { payload } = await jwtVerify(token, JWKS);
+        // console.log('payload from verify token', payload);
+        req.user = payload;
+        next();
+    }
+    catch (error) {
+        // console.log(error);
+        return res.status(401).send({ message: 'UNAUTHORIZED ACCESS' });
+    }
+}
+
+const adminVerify = (req: any, res: any, next: any) => {
+    // Cast req to any to bypass the immediate error
+    const user = (req as any).user;
+
+    if (user?.role !== 'admin') {
+        return res.status(403).json({ success: false, message: "FORBIDDEN" });
+    }
+    next();
+};
 
 
 async function runDb() {
@@ -99,7 +139,7 @@ async function runDb() {
 
 
         // USER APIs
-        app.get("/api/users", async (req: any, res: any) => {
+        app.get("/api/users", verifyToken, async (req: any, res: any) => {
             try {
                 if (!userCollection) {
                     return res.status(500).json({ success: false, message: "Database connection not established yet." });
