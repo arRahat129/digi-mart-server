@@ -81,6 +81,7 @@ const allitemsCollection = database.collection("all_items");
 const messageCollection = database.collection("messages");
 const chatCollection = database.collection("chats");
 const analyticsCollection = database.collection("analytics");
+const featuredItemsCollection = database.collection("featureds");
 
 
 const updateAnalytics = async (userId: string, updateFields: any) => {
@@ -787,6 +788,71 @@ app.delete("/api/users/:id", async (req: any, res: any) => {
         res.status(200).json({ success: true, message: "User deleted successfully." });
     } catch (error) {
         res.status(500).json({ success: false, message: "Error deleting user." });
+    }
+});
+
+app.get("/api/admin/allitems", async (req: any, res: any) => {
+    try {
+        const page = parseInt(req.query.page) || 1;
+        const limit = parseInt(req.query.limit) || 10;
+        const skip = (page - 1) * limit;
+
+        const totalItems = await allitemsCollection.countDocuments();
+        const items = await allitemsCollection.find({}).skip(skip).limit(limit).toArray();
+
+        const featuredList = await featuredItemsCollection.find({}).toArray();
+        const featuredIds = featuredList.map((f: { itemId: any }) => f.itemId.toString());
+
+        const itemsWithFeaturedStatus = items.map((item: { _id: any }) => ({
+            ...item,
+            isFeatured: featuredIds.includes(item._id.toString())
+        }));
+
+        res.status(200).json({
+            success: true,
+            data: itemsWithFeaturedStatus,
+            meta: {
+                totalItems,
+                totalPages: Math.ceil(totalItems / limit),
+                currentPage: page
+            }
+        });
+    } catch (error) {
+        res.status(500).json({ success: false, message: "Error fetching items." });
+    }
+});
+
+app.post("/api/admin/featured/toggle", async (req: any, res: any) => {
+    try {
+        const { itemId, ...productDetails } = req.body;
+        const objectId = new ObjectId(itemId);
+
+        const existing = await featuredItemsCollection.findOne({ itemId: objectId });
+
+        if (existing) {
+            await featuredItemsCollection.deleteOne({ itemId: objectId });
+            res.status(200).json({ success: true, featured: false, message: "Removed from featured." });
+        } else {
+            await featuredItemsCollection.insertOne({
+                itemId: objectId,
+                ...productDetails,
+                featuredAt: new Date()
+            });
+            res.status(201).json({ success: true, featured: true, message: "Added to featured." });
+        }
+    } catch (error) {
+        res.status(500).json({ success: false, message: "Error toggling featured." });
+    }
+});
+
+app.delete("/api/admin/items/:id", async (req: any, res: any) => {
+    try {
+        const itemId = new ObjectId(req.params.id);
+        await allitemsCollection.deleteOne({ _id: itemId });
+        await featuredItemsCollection.deleteOne({ itemId: itemId });
+        res.status(200).json({ success: true, message: "Product deleted from system." });
+    } catch (error) {
+        res.status(500).json({ success: false, message: "Error deleting product." });
     }
 });
 
