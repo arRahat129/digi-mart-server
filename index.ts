@@ -66,6 +66,16 @@ const adminVerify = (req: any, res: any, next: any) => {
     next();
 };
 
+const userVerify = (req: any, res: any, next: any) => {
+    // Cast req to any to bypass the immediate error
+    const user = (req as any).user;
+
+    if (user?.role !== 'user') {
+        return res.status(403).json({ success: false, message: "FORBIDDEN" });
+    }
+    next();
+};
+
 
 // async function runDb() {
 //     try {
@@ -99,7 +109,7 @@ const updateAnalytics = async (userId: string, updateFields: any) => {
 
 
 // Analytics
-app.get("/api/analytics/:userId", async (req: any, res: any) => {
+app.get("/api/analytics/:userId", verifyToken, userVerify, async (req: any, res: any) => {
     try {
         const { userId } = req.params;
 
@@ -134,7 +144,7 @@ app.get("/api/analytics/:userId", async (req: any, res: any) => {
     }
 });
 
-app.get("/api/admin/analytics", async (req: any, res: any) => {
+app.get("/api/admin/analytics", verifyToken, adminVerify, async (req: any, res: any) => {
     try {
         // Run parallel queries for performance
         const [totalUsers, totalItems, totalMessages, activeItems] = await Promise.all([
@@ -189,7 +199,7 @@ app.get("/api/users", verifyToken, async (req: any, res: any) => {
 });
 
 // ADMIN ALL ACTIONS AND FETCHES
-app.get("/api/users/all", async (req: any, res: any) => {
+app.get("/api/users/all", verifyToken, adminVerify, async (req: any, res: any) => {
     try {
         const { page = 1, limit = 10 } = req.query;
         const pageNumber = Math.max(1, parseInt(page));
@@ -217,7 +227,7 @@ app.get("/api/users/all", async (req: any, res: any) => {
     }
 });
 
-app.get("/api/users/:id", async (req: any, res: any) => {
+app.get("/api/users/:id", verifyToken, async (req: any, res: any) => {
     try {
         if (!userCollection || !allitemsCollection) {
             return res.status(500).json({ success: false, message: "Database connection not established yet." });
@@ -297,7 +307,7 @@ app.get("/api/allitems", async (req: any, res: any) => {
             limit = 10
         } = req.query;
 
-        const query: any = {};
+        const query: any = { status: "Approved" };
 
         if (search) {
             query.$or = [
@@ -367,7 +377,7 @@ app.get("/api/allitems", async (req: any, res: any) => {
     }
 });
 
-app.get("/api/allitems/:id", async (req: any, res: any) => {
+app.get("/api/allitems/:id", verifyToken, async (req: any, res: any) => {
     try {
         if (!allitemsCollection) {
             return res.status(500).json({
@@ -410,7 +420,7 @@ app.get("/api/allitems/:id", async (req: any, res: any) => {
 });
 
 
-app.get("/api/allitems/user/:userId", async (req: any, res: any) => {
+app.get("/api/allitems/user/:userId", verifyToken, userVerify, async (req: any, res: any) => {
     try {
         if (!allitemsCollection) {
             return res.status(500).json({ success: false, message: "Database connection not established yet." });
@@ -435,7 +445,7 @@ app.get("/api/allitems/user/:userId", async (req: any, res: any) => {
     }
 });
 
-app.post("/api/allitems", async (req: any, res: any) => {
+app.post("/api/allitems", verifyToken, userVerify, async (req: any, res: any) => {
     try {
         if (!allitemsCollection) {
             return res.status(500).json({ success: false, message: "Database connection not established yet." });
@@ -467,7 +477,7 @@ app.post("/api/allitems", async (req: any, res: any) => {
 });
 
 // DELETE ITEM
-app.delete("/api/allitems/:id", async (req: any, res: any) => {
+app.delete("/api/allitems/:id", verifyToken, userVerify, async (req: any, res: any) => {
     try {
         const itemId = req.params.id;
 
@@ -494,7 +504,7 @@ app.delete("/api/allitems/:id", async (req: any, res: any) => {
 });
 
 // EDIT ITEM
-app.patch("/api/allitems/:id", async (req: any, res: any) => {
+app.patch("/api/allitems/:id", verifyToken, userVerify, async (req: any, res: any) => {
     try {
         const itemId = req.params.id;
         const updateData = req.body;
@@ -522,7 +532,7 @@ app.patch("/api/allitems/:id", async (req: any, res: any) => {
 });
 
 // CHAT & MESSAGE APIs (FIXED SYSTEM LOOKUPS)
-app.get("/api/chats/user/:userId", async (req: any, res: any) => {
+app.get("/api/chats/user/:userId", verifyToken, userVerify, async (req: any, res: any) => {
     try {
         const targetUserId = req.params.userId;
         console.log('targetuserid', targetUserId);
@@ -591,7 +601,7 @@ app.get("/api/chats/user/:userId", async (req: any, res: any) => {
     }
 });
 
-app.post("/api/messages", async (req: any, res: any) => {
+app.post("/api/messages", verifyToken, userVerify, async (req: any, res: any) => {
     try {
         const {
             buyerId, sellerId, itemId, senderId, message,
@@ -684,7 +694,7 @@ app.post("/api/messages", async (req: any, res: any) => {
     }
 });
 
-app.get("/api/messages/chat/:chatId", async (req: any, res: any) => {
+app.get("/api/messages/chat/:chatId", verifyToken, userVerify, async (req: any, res: any) => {
     try {
         const { chatId } = req.params;
         if (!ObjectId.isValid(chatId)) {
@@ -703,7 +713,7 @@ app.get("/api/messages/chat/:chatId", async (req: any, res: any) => {
     }
 });
 
-app.patch("/api/messages/:messageId", async (req: any, res: any) => {
+app.patch("/api/messages/:messageId", verifyToken, userVerify, async (req: any, res: any) => {
     try {
         const { messageId } = req.params;
         const { status } = req.body; // Expecting "accepted" or "rejected"
@@ -732,7 +742,7 @@ app.patch("/api/messages/:messageId", async (req: any, res: any) => {
     }
 });
 
-app.patch("/api/messages/process/:messageId", async (req: any, res: any) => {
+app.patch("/api/messages/process/:messageId", verifyToken, userVerify, async (req: any, res: any) => {
     try {
         const { messageId } = req.params;
         const { action, itemId, sellerId } = req.body; // action: "accept" or "reject"
@@ -775,7 +785,7 @@ app.patch("/api/messages/process/:messageId", async (req: any, res: any) => {
 // ADMIN ALL ACTIONS AND FETCHES
 
 // 2. Update User Role
-app.patch("/api/users/role/:id", async (req: any, res: any) => {
+app.patch("/api/users/role/:id", verifyToken, adminVerify, async (req: any, res: any) => {
     try {
         const userId = req.params.id;
         const { role } = req.body; // Expecting { "role": "admin" }
@@ -797,7 +807,7 @@ app.patch("/api/users/role/:id", async (req: any, res: any) => {
 });
 
 // 3. Delete User
-app.delete("/api/users/:id", async (req: any, res: any) => {
+app.delete("/api/users/:id", verifyToken, adminVerify, async (req: any, res: any) => {
     try {
         const userId = req.params.id;
         if (!ObjectId.isValid(userId)) {
@@ -813,16 +823,22 @@ app.delete("/api/users/:id", async (req: any, res: any) => {
     }
 });
 
-app.get("/api/admin/allitems", async (req: any, res: any) => {
+app.get("/api/admin/allitems", verifyToken, adminVerify, async (req: any, res: any) => {
     try {
-        const page = parseInt(req.query.page) || 1;
-        const limit = parseInt(req.query.limit) || 10;
-        const skip = (page - 1) * limit;
+        // 1. Safe parsing rules applied exactly like the review API
+        const { page = 1, limit = 10 } = req.query;
+        const pageNumber = Math.max(1, parseInt(page as string));
+        const limitNumber = Math.max(1, parseInt(limit as string));
+        const skip = (pageNumber - 1) * limitNumber;
 
-        const totalItems = await allitemsCollection.countDocuments();
-        const items = await allitemsCollection.find({}).skip(skip).limit(limit).toArray();
+        // 2. Fetch data in parallel (Promise.all) exactly like the review API for speed
+        const [items, totalItems, featuredList] = await Promise.all([
+            allitemsCollection.find({}).skip(skip).limit(limitNumber).toArray(),
+            allitemsCollection.countDocuments({}),
+            featuredItemsCollection.find({}).toArray()
+        ]);
 
-        const featuredList = await featuredItemsCollection.find({}).toArray();
+        // 3. Map featured state (completely unchanged)
         const featuredIds = featuredList.map((f: { itemId: any }) => f.itemId.toString());
 
         const itemsWithFeaturedStatus = items.map((item: { _id: any }) => ({
@@ -830,13 +846,14 @@ app.get("/api/admin/allitems", async (req: any, res: any) => {
             isFeatured: featuredIds.includes(item._id.toString())
         }));
 
+        // 4. Send response preserving your exact "totalItems" key name for the frontend
         res.status(200).json({
             success: true,
             data: itemsWithFeaturedStatus,
             meta: {
-                totalItems,
-                totalPages: Math.ceil(totalItems / limit),
-                currentPage: page
+                totalItems, // Kept exactly as totalItems so your frontend Types don't break!
+                totalPages: Math.ceil(totalItems / limitNumber),
+                currentPage: pageNumber
             }
         });
     } catch (error) {
@@ -844,7 +861,7 @@ app.get("/api/admin/allitems", async (req: any, res: any) => {
     }
 });
 
-app.post("/api/admin/featured/toggle", async (req: any, res: any) => {
+app.post("/api/admin/featured/toggle", verifyToken, adminVerify, async (req: any, res: any) => {
     try {
         const { itemId, ...productDetails } = req.body;
         const objectId = new ObjectId(itemId);
@@ -867,7 +884,7 @@ app.post("/api/admin/featured/toggle", async (req: any, res: any) => {
     }
 });
 
-app.delete("/api/admin/items/:id", async (req: any, res: any) => {
+app.delete("/api/admin/items/:id", verifyToken, adminVerify, async (req: any, res: any) => {
     try {
         const itemId = new ObjectId(req.params.id);
         await allitemsCollection.deleteOne({ _id: itemId });
@@ -875,6 +892,64 @@ app.delete("/api/admin/items/:id", async (req: any, res: any) => {
         res.status(200).json({ success: true, message: "Product deleted from system." });
     } catch (error) {
         res.status(500).json({ success: false, message: "Error deleting product." });
+    }
+});
+
+app.get("/api/admin/items/review", verifyToken, adminVerify, async (req: any, res: any) => {
+    try {
+        const { page = 1, limit = 10 } = req.query;
+        const pageNumber = Math.max(1, parseInt(page));
+        const limitNumber = Math.max(1, parseInt(limit));
+        const skip = (pageNumber - 1) * limitNumber;
+
+        // Fetch only items that are pending or need review
+        const [items, total] = await Promise.all([
+            allitemsCollection
+                .find({}) // You can filter by { status: "pending" } if you only want to see pending ones
+                .sort({ created_at: -1 })
+                .skip(skip)
+                .limit(limitNumber)
+                .toArray(),
+            allitemsCollection.countDocuments({})
+        ]);
+
+        res.status(200).json({
+            success: true,
+            data: items,
+            meta: { total, totalPages: Math.ceil(total / limitNumber), currentPage: pageNumber }
+        });
+    } catch (error) {
+        res.status(500).json({ success: false, message: "Error fetching items for review." });
+    }
+});
+
+// PATCH endpoint to approve or reject an item
+app.patch("/api/admin/items/status/:id", verifyToken, adminVerify, async (req: any, res: any) => {
+    try {
+        const { id } = req.params;
+        const { status } = req.body; // Expecting "Approved" or "Rejected"
+
+        if (!["Approved", "Rejected"].includes(status)) {
+            return res.status(400).json({ success: false, message: "Invalid status provided." });
+        }
+
+        if (!ObjectId.isValid(id)) {
+            return res.status(400).json({ success: false, message: "Invalid Item ID." });
+        }
+
+        const result = await allitemsCollection.updateOne(
+            { _id: new ObjectId(id) },
+            { $set: { status: status } }
+        );
+
+        if (result.matchedCount === 0) {
+            return res.status(404).json({ success: false, message: "Item not found." });
+        }
+
+        res.status(200).json({ success: true, message: `Item status updated to ${status}.` });
+    } catch (error) {
+        console.error("❌ Error updating item status:", error);
+        res.status(500).json({ success: false, message: "Failed to update item status." });
     }
 });
 
