@@ -15,7 +15,13 @@ dotenv.config();
 const app = express();
 const PORT = process.env.PORT || 5000;
 // Middleware
-app.use(cors());
+app.use(cors({
+    origin: [
+        'http://localhost:3000',
+        'https://digi-mart-kappa.vercel.app' // Add your production frontend URL here
+    ],
+    credentials: true
+}));
 app.use(express.json());
 const uri = process.env.MONGO_DB_URI;
 const client = new MongoClient(uri, {
@@ -25,7 +31,8 @@ const client = new MongoClient(uri, {
         deprecationErrors: true,
     }
 });
-const JWKS = (0, jose_cjs_1.createRemoteJWKSet)(new URL(`${process.env.CLIENT_URL}/api/auth/jwks`));
+const clientUrl = process.env.CLIENT_URL || 'https://digi-mart-kappa.vercel.app';
+const JWKS = (0, jose_cjs_1.createRemoteJWKSet)(new URL(`${clientUrl}/api/auth/jwks`));
 const verifyToken = async (req, res, next) => {
     // console.log('headers', req.headers);
     const authHeader = req.headers?.authorization;
@@ -56,6 +63,14 @@ const adminVerify = (req, res, next) => {
     }
     next();
 };
+const userVerify = (req, res, next) => {
+    // Cast req to any to bypass the immediate error
+    const user = req.user;
+    if (user?.role !== 'user') {
+        return res.status(403).json({ success: false, message: "FORBIDDEN" });
+    }
+    next();
+};
 // async function runDb() {
 //     try {
 //         // Connect the client to the server
@@ -69,53 +84,73 @@ const allitemsCollection = database.collection("all_items");
 const messageCollection = database.collection("messages");
 const chatCollection = database.collection("chats");
 const analyticsCollection = database.collection("analytics");
+const featuredItemsCollection = database.collection("featureds");
 const updateAnalytics = async (userId, updateFields) => {
+    if (!userId)
+        return;
     await analyticsCollection.updateOne({ userId: userId }, {
         $inc: updateFields,
         $set: { lastUpdated: new Date() }
     }, { upsert: true });
 };
 // Analytics
-app.get("/api/analytics/:userId", async (req, res) => {
+app.get("/api/analytics/:userId", verifyToken, userVerify, async (req, res) => {
     try {
-        const userId = req.params.userId;
-        // Run one query to get everything dynamically
-        const data = await messageCollection.aggregate([
-            {
-                $facet: {
-                    "inventory": [
-                        { $match: { userId: userId, availability: "available" } },
-                        { $count: "count" }
-                    ],
-                    "requests": [
-                        { $match: { sellerId: userId } },
-                        { $group: { _id: "$status", count: { $sum: 1 } } }
-                    ],
-                    "trend": [
-                        { $match: { $or: [{ senderId: userId }, { receiverId: userId }], timestamp: { $gte: new Date(new Date().setDate(new Date().getDate() - 7)) } } },
-                        { $group: { _id: { $dateToString: { format: "%Y-%m-%d", date: "$timestamp" } }, count: { $sum: 1 } } },
-                        { $sort: { "_id": 1 } }
-                    ]
-                }
-            }
+        const { userId } = req.params;
+        // 1. Fetch userStats
+        const userStats = await analyticsCollection.findOne({ userId: userId });
+        // 2. Fetch inventoryCount (calculated dynamically to ensure accuracy)
+        const inventoryCount = await allitemsCollection.countDocuments({ userId: userId });
+        // 3. Aggregate trends
+        const activityTrend = await messageCollection.aggregate([
+            { $match: { senderId: userId } },
+            { $group: { _id: { $dateToString: { format: "%Y-%m-%d", date: "$createdAt" } }, count: { $sum: 1 } } },
+            { $sort: { _id: 1 } }
         ]).toArray();
-        const result = data[0];
-        const getStatusCount = (status) => result.requests.find((r) => r._id === status)?.count || 0;
+        // 4. Return the data
         res.status(200).json({
             success: true,
             data: {
-                summary: {
-                    totalInventory: result.inventory[0]?.count || 0,
-                    totalRequests: getStatusCount("pending") + getStatusCount("accepted"),
-                    acceptedDeals: getStatusCount("accepted"),
-                    pendingDeals: getStatusCount("pending")
-                },
-                activityTrend: result.trend
+                inventoryCount,
+                itemsAdded: userStats?.itemsAdded || 0, // Now included
+                totalRequestsSent: userStats?.totalRequestsSent || 0,
+                totalRequestsReceived: userStats?.totalRequestsReceived || 0,
+                acceptedDeals: userStats?.acceptedRequests || 0,
+                activityTrend
             }
         });
     }
     catch (error) {
-        res.status(500).json({ success: false, message: "Error generating analytics." });
+        console.error("API Error:", error);
+        res.status(500).json({ success: false, message: "Error fetching user analytics." });
+    }
+});
+app.get("/api/admin/analytics", verifyToken, adminVerify, async (req, res) => {
+    try {
+        // Run parallel queries for performance
+        const [totalUsers, totalItems, totalMessages, activeItems] = await Promise.all([
+            userCollection.countDocuments(),
+            allitemsCollection.countDocuments(),
+            messageCollection.countDocuments(),
+            allitemsCollection.countDocuments({ availability: "available" })
+        ]);
+        // Aggregate total successful deals (items that are unavailable due to being accepted)
+        const totalCompletedDeals = await allitemsCollection.countDocuments({ availability: "unavailable" });
+        res.status(200).json({
+            success: true,
+            data: {
+                platformOverview: {
+                    totalUsers,
+                    totalItems,
+                    totalMessages,
+                    activeListings: activeItems,
+                    completedDeals: totalCompletedDeals
+                }
+            }
+        });
+    }
+    catch (error) {
+        res.status(500).json({ success: false, message: "Error generating admin analytics." });
     }
 });
 // USER APIs
@@ -140,7 +175,7 @@ app.get("/api/users", verifyToken, async (req, res) => {
     }
 });
 // ADMIN ALL ACTIONS AND FETCHES
-app.get("/api/users/all", async (req, res) => {
+app.get("/api/users/all", verifyToken, adminVerify, async (req, res) => {
     try {
         const { page = 1, limit = 10 } = req.query;
         const pageNumber = Math.max(1, parseInt(page));
@@ -165,7 +200,7 @@ app.get("/api/users/all", async (req, res) => {
         res.status(500).json({ success: false, message: "Error fetching users." });
     }
 });
-app.get("/api/users/:id", async (req, res) => {
+app.get("/api/users/:id", verifyToken, async (req, res) => {
     try {
         if (!userCollection || !allitemsCollection) {
             return res.status(500).json({ success: false, message: "Database connection not established yet." });
@@ -227,7 +262,7 @@ app.get("/api/allitems", async (req, res) => {
             });
         }
         const { search, category, minPrice, maxPrice, sortBy, sortOrder, page = 1, limit = 10 } = req.query;
-        const query = {};
+        const query = { status: "Approved" };
         if (search) {
             query.$or = [
                 { title: { $regex: search, $options: "i" } },
@@ -290,7 +325,7 @@ app.get("/api/allitems", async (req, res) => {
         });
     }
 });
-app.get("/api/allitems/:id", async (req, res) => {
+app.get("/api/allitems/:id", verifyToken, async (req, res) => {
     try {
         if (!allitemsCollection) {
             return res.status(500).json({
@@ -326,7 +361,7 @@ app.get("/api/allitems/:id", async (req, res) => {
         });
     }
 });
-app.get("/api/allitems/user/:userId", async (req, res) => {
+app.get("/api/allitems/user/:userId", verifyToken, userVerify, async (req, res) => {
     try {
         if (!allitemsCollection) {
             return res.status(500).json({ success: false, message: "Database connection not established yet." });
@@ -348,7 +383,7 @@ app.get("/api/allitems/user/:userId", async (req, res) => {
         });
     }
 });
-app.post("/api/allitems", async (req, res) => {
+app.post("/api/allitems", verifyToken, userVerify, async (req, res) => {
     try {
         if (!allitemsCollection) {
             return res.status(500).json({ success: false, message: "Database connection not established yet." });
@@ -375,7 +410,7 @@ app.post("/api/allitems", async (req, res) => {
     }
 });
 // DELETE ITEM
-app.delete("/api/allitems/:id", async (req, res) => {
+app.delete("/api/allitems/:id", verifyToken, userVerify, async (req, res) => {
     try {
         const itemId = req.params.id;
         // 1. Find the item first to get the owner's userId
@@ -398,7 +433,7 @@ app.delete("/api/allitems/:id", async (req, res) => {
     }
 });
 // EDIT ITEM
-app.patch("/api/allitems/:id", async (req, res) => {
+app.patch("/api/allitems/:id", verifyToken, userVerify, async (req, res) => {
     try {
         const itemId = req.params.id;
         const updateData = req.body;
@@ -418,7 +453,7 @@ app.patch("/api/allitems/:id", async (req, res) => {
     }
 });
 // CHAT & MESSAGE APIs (FIXED SYSTEM LOOKUPS)
-app.get("/api/chats/user/:userId", async (req, res) => {
+app.get("/api/chats/user/:userId", verifyToken, userVerify, async (req, res) => {
     try {
         const targetUserId = req.params.userId;
         console.log('targetuserid', targetUserId);
@@ -485,7 +520,7 @@ app.get("/api/chats/user/:userId", async (req, res) => {
         res.status(500).json({ success: false, message: "Server error retrieving chat relationships." });
     }
 });
-app.post("/api/messages", async (req, res) => {
+app.post("/api/messages", verifyToken, userVerify, async (req, res) => {
     try {
         const { buyerId, sellerId, itemId, senderId, message, buyerName, buyerImage, buyerEmail, sellerName, sellerImage, location, contact } = req.body;
         if (!buyerId || !sellerId || !itemId || !senderId || !message) {
@@ -555,7 +590,7 @@ app.post("/api/messages", async (req, res) => {
         res.status(500).json({ success: false, message: "Server error handling message dispatch." });
     }
 });
-app.get("/api/messages/chat/:chatId", async (req, res) => {
+app.get("/api/messages/chat/:chatId", verifyToken, userVerify, async (req, res) => {
     try {
         const { chatId } = req.params;
         if (!mongodb_1.ObjectId.isValid(chatId)) {
@@ -572,7 +607,7 @@ app.get("/api/messages/chat/:chatId", async (req, res) => {
         res.status(500).json({ success: false, message: "Server error." });
     }
 });
-app.patch("/api/messages/:messageId", async (req, res) => {
+app.patch("/api/messages/:messageId", verifyToken, userVerify, async (req, res) => {
     try {
         const { messageId } = req.params;
         const { status } = req.body; // Expecting "accepted" or "rejected"
@@ -593,7 +628,7 @@ app.patch("/api/messages/:messageId", async (req, res) => {
         res.status(500).json({ success: false, message: "Internal server error." });
     }
 });
-app.patch("/api/messages/process/:messageId", async (req, res) => {
+app.patch("/api/messages/process/:messageId", verifyToken, userVerify, async (req, res) => {
     try {
         const { messageId } = req.params;
         const { action, itemId, sellerId } = req.body; // action: "accept" or "reject"
@@ -621,7 +656,7 @@ app.patch("/api/messages/process/:messageId", async (req, res) => {
 });
 // ADMIN ALL ACTIONS AND FETCHES
 // 2. Update User Role
-app.patch("/api/users/role/:id", async (req, res) => {
+app.patch("/api/users/role/:id", verifyToken, adminVerify, async (req, res) => {
     try {
         const userId = req.params.id;
         const { role } = req.body; // Expecting { "role": "admin" }
@@ -638,7 +673,7 @@ app.patch("/api/users/role/:id", async (req, res) => {
     }
 });
 // 3. Delete User
-app.delete("/api/users/:id", async (req, res) => {
+app.delete("/api/users/:id", verifyToken, adminVerify, async (req, res) => {
     try {
         const userId = req.params.id;
         if (!mongodb_1.ObjectId.isValid(userId)) {
@@ -651,6 +686,121 @@ app.delete("/api/users/:id", async (req, res) => {
     }
     catch (error) {
         res.status(500).json({ success: false, message: "Error deleting user." });
+    }
+});
+app.get("/api/admin/allitems", verifyToken, adminVerify, async (req, res) => {
+    try {
+        // 1. Safe parsing rules applied exactly like the review API
+        const { page = 1, limit = 10 } = req.query;
+        const pageNumber = Math.max(1, parseInt(page));
+        const limitNumber = Math.max(1, parseInt(limit));
+        const skip = (pageNumber - 1) * limitNumber;
+        // 2. Fetch data in parallel (Promise.all) exactly like the review API for speed
+        const [items, totalItems, featuredList] = await Promise.all([
+            allitemsCollection.find({}).skip(skip).limit(limitNumber).toArray(),
+            allitemsCollection.countDocuments({}),
+            featuredItemsCollection.find({}).toArray()
+        ]);
+        // 3. Map featured state (completely unchanged)
+        const featuredIds = featuredList.map((f) => f.itemId.toString());
+        const itemsWithFeaturedStatus = items.map((item) => ({
+            ...item,
+            isFeatured: featuredIds.includes(item._id.toString())
+        }));
+        // 4. Send response preserving your exact "totalItems" key name for the frontend
+        res.status(200).json({
+            success: true,
+            data: itemsWithFeaturedStatus,
+            meta: {
+                totalItems, // Kept exactly as totalItems so your frontend Types don't break!
+                totalPages: Math.ceil(totalItems / limitNumber),
+                currentPage: pageNumber
+            }
+        });
+    }
+    catch (error) {
+        res.status(500).json({ success: false, message: "Error fetching items." });
+    }
+});
+app.post("/api/admin/featured/toggle", verifyToken, adminVerify, async (req, res) => {
+    try {
+        const { itemId, ...productDetails } = req.body;
+        const objectId = new mongodb_1.ObjectId(itemId);
+        const existing = await featuredItemsCollection.findOne({ itemId: objectId });
+        if (existing) {
+            await featuredItemsCollection.deleteOne({ itemId: objectId });
+            res.status(200).json({ success: true, featured: false, message: "Removed from featured." });
+        }
+        else {
+            await featuredItemsCollection.insertOne({
+                itemId: objectId,
+                ...productDetails,
+                featuredAt: new Date()
+            });
+            res.status(201).json({ success: true, featured: true, message: "Added to featured." });
+        }
+    }
+    catch (error) {
+        res.status(500).json({ success: false, message: "Error toggling featured." });
+    }
+});
+app.delete("/api/admin/items/:id", verifyToken, adminVerify, async (req, res) => {
+    try {
+        const itemId = new mongodb_1.ObjectId(req.params.id);
+        await allitemsCollection.deleteOne({ _id: itemId });
+        await featuredItemsCollection.deleteOne({ itemId: itemId });
+        res.status(200).json({ success: true, message: "Product deleted from system." });
+    }
+    catch (error) {
+        res.status(500).json({ success: false, message: "Error deleting product." });
+    }
+});
+app.get("/api/admin/items/review", verifyToken, adminVerify, async (req, res) => {
+    try {
+        const { page = 1, limit = 10 } = req.query;
+        const pageNumber = Math.max(1, parseInt(page));
+        const limitNumber = Math.max(1, parseInt(limit));
+        const skip = (pageNumber - 1) * limitNumber;
+        // Fetch only items that are pending or need review
+        const [items, total] = await Promise.all([
+            allitemsCollection
+                .find({}) // You can filter by { status: "pending" } if you only want to see pending ones
+                .sort({ created_at: -1 })
+                .skip(skip)
+                .limit(limitNumber)
+                .toArray(),
+            allitemsCollection.countDocuments({})
+        ]);
+        res.status(200).json({
+            success: true,
+            data: items,
+            meta: { total, totalPages: Math.ceil(total / limitNumber), currentPage: pageNumber }
+        });
+    }
+    catch (error) {
+        res.status(500).json({ success: false, message: "Error fetching items for review." });
+    }
+});
+// PATCH endpoint to approve or reject an item
+app.patch("/api/admin/items/status/:id", verifyToken, adminVerify, async (req, res) => {
+    try {
+        const { id } = req.params;
+        const { status } = req.body; // Expecting "Approved" or "Rejected"
+        if (!["Approved", "Rejected"].includes(status)) {
+            return res.status(400).json({ success: false, message: "Invalid status provided." });
+        }
+        if (!mongodb_1.ObjectId.isValid(id)) {
+            return res.status(400).json({ success: false, message: "Invalid Item ID." });
+        }
+        const result = await allitemsCollection.updateOne({ _id: new mongodb_1.ObjectId(id) }, { $set: { status: status } });
+        if (result.matchedCount === 0) {
+            return res.status(404).json({ success: false, message: "Item not found." });
+        }
+        res.status(200).json({ success: true, message: `Item status updated to ${status}.` });
+    }
+    catch (error) {
+        console.error("❌ Error updating item status:", error);
+        res.status(500).json({ success: false, message: "Failed to update item status." });
     }
 });
 //         // Send a ping to confirm a successful connection
